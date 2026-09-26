@@ -7,7 +7,7 @@ app = FastAPI()
 # --- CONFIGURACIÓN DE CONEXIÓN A SQL SERVER ---
 def get_db_connection():
     return pyodbc.connect(
-        'DRIVER={SQL Server};' 
+        'DRIVER={ODBC Driver 17 for SQL Server};' 
                     'SERVER=CBTis139.mssql.somee.com;'        # <-- PON TU SERVIDOR
                     'DATABASE=CBTis139;' # <-- PON TU BASE DE DATOS
                     'UID=TovarLara_SQLLogin_1;'            # <-- PON TU USUARIO (ej. sa)
