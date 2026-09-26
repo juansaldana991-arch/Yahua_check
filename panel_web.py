@@ -8,7 +8,7 @@ import pandas as pd
 def conectar_bd():
     try:
         conexion = pyodbc.connect(
-            'DRIVER={SQL Server};' 
+            'DRIVER={ODBC Driver 17 for SQL Server};' 
             'SERVER=CBTis139.mssql.somee.com;'        # <-- PON TU SERVIDOR
             'DATABASE=CBTis139;' # <-- PON TU BASE DE DATOS
             'UID=TovarLara_SQLLogin_1;'            # <-- PON TU USUARIO (ej. sa)
