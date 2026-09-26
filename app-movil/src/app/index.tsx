@@ -4,7 +4,7 @@ import QRCode from 'react-native-qrcode-svg';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 
 // 👇 PON AQUÍ LA IP DE TU COMPUTADORA CON EL PUERTO 8000 👇
-const API_URL = "http://192.168.68.123:8000"; 
+const API_URL = "http://192.168.1.115:8000"; 
 
 export default function App() {
   const [tipoUsuario, setTipoUsuario] = useState('maestro'); 

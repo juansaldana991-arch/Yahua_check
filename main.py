@@ -1,18 +1,28 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import pyodbc
+import platform
 
 app = FastAPI()
 
 # --- CONFIGURACIÓN DE CONEXIÓN A SQL SERVER ---
 def get_db_connection():
-    return pyodbc.connect(
-        'DRIVER={ODBC Driver 17 for SQL Server};' 
-                    'SERVER=CBTis139.mssql.somee.com;'        # <-- PON TU SERVIDOR
-                    'DATABASE=CBTis139;' # <-- PON TU BASE DE DATOS
-                    'UID=TovarLara_SQLLogin_1;'            # <-- PON TU USUARIO (ej. sa)
-                    'PWD=1hmetvyyiv'          # <-- PON TUS DATOS AQUÍ
+    # Detectar el sistema operativo para asignar el driver correcto
+    if platform.system() == "Linux":
+        driver_conexion = "{ODBC Driver 17 for SQL Server}"
+    else:
+        driver_conexion = "{SQL Server}"
+
+    # Cadena de conexión con tus datos exactos y la variable inteligente (f)
+    conexion_str = (
+        f"DRIVER={driver_conexion};"
+        "SERVER=CBTis139.mssql.somee.com;"
+        "DATABASE=CBTis139;"
+        "UID=TovarLara_SQLLogin_1;"
+        "PWD=1hmetvyyiv"
     )
+    
+    return pyodbc.connect(conexion_str)
 
 # --- MODELOS DE DATOS ---
 class LoginMaestro(BaseModel):
