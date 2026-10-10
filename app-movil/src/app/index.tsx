@@ -1,191 +1,311 @@
-import React, { useState } from 'react';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, Alert } from 'react-native';
-import QRCode from 'react-native-qrcode-svg';
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import React, { useState, useEffect } from 'react';
+import { StyleSheet, Text, View, TextInput, TouchableOpacity, Alert, FlatList } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// 👇 PON AQUÍ LA IP DE TU COMPUTADORA CON EL PUERTO 8000 👇
-const API_URL = "http://192.168.1.115:8000"; 
+interface Alumno {
+  matricula: string;
+  nombre: string;
+  estado: string;
+}
+
+const API_URL = "https://api-asistencias-yahualica.onrender.com";
 
 export default function App() {
-  const [tipoUsuario, setTipoUsuario] = useState('maestro'); 
-  
-  // Estados del Maestro
   const [idMaestro, setIdMaestro] = useState('');
-  const [codigo, setCodigo] = useState('');
   const [sesionIniciada, setSesionIniciada] = useState(false);
-  const [escaneando, setEscaneando] = useState(false);
-  const [permisoCamara, pedirPermisoCamara] = useCameraPermissions();
+  const [pantallaActual, setPantallaActual] = useState('menu');
   
-  // Estados del Alumno
-  const [matricula, setMatricula] = useState('');
-  const [qrGenerado, setQrGenerado] = useState<string | null>(null);
+  const [alumnosOffline, setAlumnosOffline] = useState<Alumno[]>([]);
+  
+  // NUEVO ESTADO: Para saber cuál fue el último alumno nombrado
+  const [ultimoNombrado, setUltimoNombrado] = useState<string | null>(null);
 
-  // --- FUNCIONES DEL MAESTRO ---
+  useEffect(() => {
+    if (sesionIniciada) {
+      cargarMemoriaLocal();
+    }
+  }, [sesionIniciada]);
+
+  const cargarMemoriaLocal = async () => {
+    try {
+      const datosGuardados = await AsyncStorage.getItem('@alumnos_offline');
+      if (datosGuardados !== null) {
+        setAlumnosOffline(JSON.parse(datosGuardados));
+      }
+    } catch (e) {
+      console.log("Error al cargar memoria local");
+    }
+  };
+
+  const guardarMemoriaLocal = async (nuevosDatos: Alumno[]) => {
+    try {
+      setAlumnosOffline(nuevosDatos);
+      await AsyncStorage.setItem('@alumnos_offline', JSON.stringify(nuevosDatos));
+    } catch (e) {
+      console.log("Error al guardar en memoria local");
+    }
+  };
+
   const handleLoginMaestro = async () => {
+    if (!idMaestro.trim()) {
+      Alert.alert("Error", "Por favor ingresa tu ID de maestro.");
+      return;
+    }
+
     try {
       const respuesta = await fetch(`${API_URL}/maestro/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id_maestro: parseInt(idMaestro), codigo: codigo })
+        body: JSON.stringify({ id_maestro: parseInt(idMaestro) })
       });
-      
       const datos = await respuesta.json();
       
       if (respuesta.ok) {
         Alert.alert("Éxito", datos.mensaje);
         setSesionIniciada(true);
       } else {
-        Alert.alert("Error", datos.detail || "Código incorrecto");
+        const mensajeError = typeof datos.detail === 'string' 
+          ? datos.detail 
+          : "Faltan datos o el servidor en Render sigue actualizándose.";
+          
+        Alert.alert("Error", mensajeError);
       }
     } catch (error) {
-      Alert.alert("Error de Conexión", "No se pudo conectar a la API. Verifica tu IP y que la API esté encendida.");
+      Alert.alert("Error", "No hay conexión a internet para iniciar sesión.");
     }
   };
 
-  const handleEscanearQR = ({ data }: { data: string }) => {
-    setEscaneando(false); 
-    
-    fetch(`${API_URL}/asistencia/registrar`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ matricula_alumno: data, id_maestro: parseInt(idMaestro) })
-    })
-    .then(res => res.json())
-    .then(datos => {
-      if (datos.status === "Éxito") {
-        Alert.alert("✅ Asistencia Registrada", datos.mensaje);
-      } else {
-        Alert.alert("❌ Error", datos.detail || "No se pudo registrar.");
+  const descargarAlumnos = async () => {
+    try {
+      Alert.alert("Descargando...", "Obteniendo lista de la nube...");
+      const respuesta = await fetch(`${API_URL}/alumnos/descargar`);
+      const datos = await respuesta.json();
+      
+      if (respuesta.ok) {
+        const listaPreparada: Alumno[] = datos.alumnos.map((alumno: {matricula: string, nombre: string}) => ({
+          ...alumno,
+          estado: 'Presente' 
+        }));
+        await guardarMemoriaLocal(listaPreparada);
+        Alert.alert("¡Listo!", "Base de datos descargada. Ya puedes trabajar sin internet.");
       }
-    })
-    .catch(error => Alert.alert("Error", "Fallo al enviar a la base de datos."));
-  };
-
-  const abrirCamara = () => {
-    if (!permisoCamara?.granted) {
-      pedirPermisoCamara();
-      return;
+    } catch (error) {
+      Alert.alert("Error", "Necesitas internet para descargar la lista.");
     }
-    setEscaneando(true);
   };
 
-  // --- FUNCIONES DEL ALUMNO ---
-  const handleGenerarQR = () => {
-    if (matricula.trim() === '') {
-      Alert.alert("Error", "Por favor ingresa tu matrícula.");
-      return;
+  const sincronizarNube = async () => {
+    try {
+      Alert.alert("Subiendo...", "Sincronizando datos con el servidor...");
+      
+      const registrosParaEnviar = alumnosOffline.map((alumno) => ({
+        matricula_alumno: alumno.matricula,
+        id_maestro: parseInt(idMaestro),
+        estado: alumno.estado
+      }));
+
+      const respuesta = await fetch(`${API_URL}/asistencia/sincronizar`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(registrosParaEnviar)
+      });
+      
+      const datos = await respuesta.json();
+      if (respuesta.ok) {
+        Alert.alert("¡Sincronización Exitosa!", datos.mensaje);
+      } else {
+        Alert.alert("Error", "Hubo un problema al guardar en la nube.");
+      }
+    } catch (error) {
+      Alert.alert("Error", "Necesitas internet para subir los reportes.");
     }
-    setQrGenerado(matricula.trim().toUpperCase());
   };
 
-  // VISTA DE LA CÁMARA
-  if (escaneando) {
+  const alternarAsistencia = (matricula: string) => {
+    const nuevosDatos = alumnosOffline.map((alumno) => {
+      if (alumno.matricula === matricula) {
+        return { ...alumno, estado: alumno.estado === 'Presente' ? 'Faltó' : 'Presente' };
+      }
+      return alumno;
+    });
+    guardarMemoriaLocal(nuevosDatos);
+    setUltimoNombrado(matricula); // También marca a este alumno como el último interactuado
+  };
+
+  const alternarJustificante = (matricula: string) => {
+    const nuevosDatos = alumnosOffline.map((alumno) => {
+      if (alumno.matricula === matricula) {
+        return { ...alumno, estado: alumno.estado === 'Faltó' ? 'Justificado' : 'Faltó' };
+      }
+      return alumno;
+    });
+    guardarMemoriaLocal(nuevosDatos);
+  };
+
+  if (sesionIniciada && pantallaActual === 'lista') {
     return (
       <View style={styles.container}>
-        <CameraView 
-          style={StyleSheet.absoluteFill} 
-          facing="back"
-          onBarcodeScanned={handleEscanearQR}
-          barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+        <Text style={styles.titulo}>Pase de Lista</Text>
+        <Text style={styles.subtitulo}>Toca el nombre del alumno para marcar dónde vas.</Text>
+        
+        <FlatList 
+          data={alumnosOffline}
+          keyExtractor={(item) => item.matricula}
+          renderItem={({ item }) => (
+            // Cambio de diseño: Le agregamos un color diferente si es el "ultimoNombrado"
+            <View style={[styles.filaAlumno, ultimoNombrado === item.matricula && styles.filaResaltada]}>
+              
+              {/* Aquí el maestro puede tocar el nombre para poner el marcador */}
+              <TouchableOpacity 
+                style={styles.infoTextContainer} 
+                onPress={() => setUltimoNombrado(item.matricula)}
+                activeOpacity={0.6}
+              >
+                <Text style={styles.nombre}>
+                  {ultimoNombrado === item.matricula ? '📍 ' : ''}{item.nombre}
+                </Text>
+                <Text style={styles.matriculaTexto}>{item.matricula}</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={[styles.botonEstado, item.estado === 'Presente' ? styles.bgVerde : styles.bgRojo]}
+                onPress={() => alternarAsistencia(item.matricula)}
+              >
+                <Text style={styles.textoBotonEstado}>
+                  {item.estado === 'Presente' ? '✅ Asistió' : '❌ Faltó'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          )}
         />
-        <TouchableOpacity style={styles.botonCancelar} onPress={() => setEscaneando(false)}>
-          <Text style={styles.textoBoton}>Cancelar Escáner</Text>
+        <TouchableOpacity style={styles.botonAccion} onPress={() => setPantallaActual('menu')}>
+          <Text style={styles.textoBoton}>Guardar y Volver al Menú</Text>
         </TouchableOpacity>
       </View>
     );
   }
 
-  // PANTALLA PRINCIPAL
+  if (sesionIniciada && pantallaActual === 'justificantes') {
+    const alumnosConFalta = alumnosOffline.filter(a => a.estado !== 'Presente');
+
+    return (
+      <View style={styles.container}>
+        <Text style={styles.titulo}>Justificantes</Text>
+        <Text style={styles.subtitulo}>Solo se muestran alumnos ausentes</Text>
+        
+        {alumnosConFalta.length === 0 ? (
+          <Text style={{textAlign: 'center', marginTop: 50, fontSize: 16}}>No hay alumnos con faltas hoy. 🎉</Text>
+        ) : (
+          <FlatList 
+            data={alumnosConFalta}
+            keyExtractor={(item) => item.matricula}
+            renderItem={({ item }) => (
+              <View style={styles.filaAlumno}>
+                <View style={styles.infoTextContainer}>
+                  <Text style={styles.nombre}>{item.nombre}</Text>
+                  <Text style={styles.matriculaTexto}>{item.matricula}</Text>
+                </View>
+                <TouchableOpacity 
+                  style={[styles.botonEstado, item.estado === 'Justificado' ? styles.bgAmarillo : styles.bgRojo]}
+                  onPress={() => alternarJustificante(item.matricula)}
+                >
+                  <Text style={styles.textoBotonEstado}>
+                    {item.estado === 'Justificado' ? '⚠️ Justif.' : '❌ Faltó'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          />
+        )}
+        <TouchableOpacity style={styles.botonAccion} onPress={() => setPantallaActual('menu')}>
+          <Text style={styles.textoBoton}>Guardar y Volver al Menú</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  if (sesionIniciada && pantallaActual === 'menu') {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.titulo}>Panel del Maestro</Text>
+        <Text style={styles.subtitulo}>Selecciona una opción</Text>
+
+        <TouchableOpacity style={styles.botonMenuSecundario} onPress={descargarAlumnos}>
+          <Text style={styles.textoBotonNegro}>1. 📥 Descargar Lista (Internet)</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.botonMenu} onPress={() => setPantallaActual('lista')}>
+          <Text style={styles.textoBoton}>2. 📝 Tomar Asistencia (Offline)</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.botonMenuAzul} onPress={() => setPantallaActual('justificantes')}>
+          <Text style={styles.textoBoton}>3. 📄 Aplicar Justificantes (Offline)</Text>
+        </TouchableOpacity>
+
+        <View style={styles.separador}></View>
+
+        <TouchableOpacity style={styles.botonMenuNaranja} onPress={sincronizarNube}>
+          <Text style={styles.textoBoton}>4. ☁️ Subir Reportes a la Nube</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={[styles.botonMenuSecundario, {marginTop: 30}]} onPress={() => setSesionIniciada(false)}>
+          <Text style={styles.textoBotonNegro}>Cerrar Sesión</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       <Text style={styles.titulo}>Colegio Universitario</Text>
-      <Text style={styles.subtitulo}>Control de Asistencia</Text>
+      <Text style={styles.subtitulo}>Portal de Maestros</Text>
 
-      <View style={styles.selectorContainer}>
-        <TouchableOpacity 
-          style={[styles.botonSelector, tipoUsuario === 'maestro' && styles.botonActivo]}
-          onPress={() => setTipoUsuario('maestro')}
-        >
-          <Text style={[styles.textoSelector, tipoUsuario === 'maestro' && {color: 'white'}]}>Soy Maestro</Text>
-        </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={[styles.botonSelector, tipoUsuario === 'alumno' && styles.botonActivo]}
-          onPress={() => {
-            setTipoUsuario('alumno');
-            setQrGenerado(null);
-          }}
-        >
-          <Text style={[styles.textoSelector, tipoUsuario === 'alumno' && {color: 'white'}]}>Soy Alumno</Text>
+      <View style={styles.formulario}>
+        <Text style={styles.label}>ID de Maestro:</Text>
+        <TextInput 
+          style={styles.input} 
+          placeholder="Ej. 1001" 
+          value={idMaestro} 
+          onChangeText={setIdMaestro} 
+          keyboardType="numeric" 
+        />
+        <TouchableOpacity style={styles.botonAccion} onPress={handleLoginMaestro}>
+          <Text style={styles.textoBoton}>Iniciar Sesión</Text>
         </TouchableOpacity>
       </View>
-
-      {/* ---------------- FORMULARIO DE MAESTRO ---------------- */}
-      {tipoUsuario === 'maestro' && !sesionIniciada && (
-        <View style={styles.formulario}>
-          <Text style={styles.label}>ID de Maestro:</Text>
-          <TextInput style={styles.input} placeholder="Ej. 1001" value={idMaestro} onChangeText={setIdMaestro} keyboardType="numeric" />
-          <Text style={styles.label}>Código de Acceso Único:</Text>
-          <TextInput style={styles.input} placeholder="Ingresa el código" value={codigo} onChangeText={setCodigo} secureTextEntry />
-          <TouchableOpacity style={styles.botonPrincipal} onPress={handleLoginMaestro}>
-            <Text style={styles.textoBoton}>Iniciar Sesión</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {/* PANEL DEL MAESTRO AUTENTICADO */}
-      {tipoUsuario === 'maestro' && sesionIniciada && (
-        <View style={styles.formulario}>
-          <Text style={styles.label}>¡Bienvenido, Maestro!</Text>
-          <Text style={{marginBottom: 20}}>Usa el botón de abajo para escanear el código de los alumnos.</Text>
-          <TouchableOpacity style={styles.botonPrincipal} onPress={abrirCamara}>
-            <Text style={styles.textoBoton}>📷 Abrir Cámara</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.botonPrincipal, {backgroundColor: '#EF4444', marginTop: 10}]} onPress={() => setSesionIniciada(false)}>
-            <Text style={styles.textoBoton}>Cerrar Sesión</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {/* ---------------- FORMULARIO DE ALUMNO ---------------- */}
-      {tipoUsuario === 'alumno' && (
-        <View style={styles.formulario}>
-          <Text style={styles.label}>Matrícula del Alumno:</Text>
-          <TextInput style={styles.input} placeholder="Ej. ALU24001" value={matricula} onChangeText={setMatricula} autoCapitalize="characters" />
-          <TouchableOpacity style={styles.botonPrincipalSecundario} onPress={handleGenerarQR}>
-            <Text style={styles.textoBoton}>Mostrar mi código QR</Text>
-          </TouchableOpacity>
-          {qrGenerado && (
-            <View style={styles.qrContainer}>
-              <Text style={styles.textoInstruccion}>Muestra este código al profesor:</Text>
-              <View style={styles.qrMarco}>
-                <QRCode value={qrGenerado} size={180} />
-              </View>
-            </View>
-          )}
-        </View>
-      )}
     </View>
   );
 }
 
-// ESTILOS
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F3F4F6', padding: 20, justifyContent: 'center' },
   titulo: { fontSize: 28, fontWeight: 'bold', textAlign: 'center', color: '#1F2937' },
-  subtitulo: { fontSize: 16, textAlign: 'center', color: '#6B7280', marginBottom: 30 },
-  selectorContainer: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 },
-  botonSelector: { flex: 1, padding: 15, backgroundColor: '#E5E7EB', borderRadius: 10, marginHorizontal: 5, alignItems: 'center' },
-  botonActivo: { backgroundColor: '#3B82F6' },
-  textoSelector: { fontWeight: 'bold', color: '#374151' },
+  subtitulo: { fontSize: 16, textAlign: 'center', color: '#6B7280', marginBottom: 20 },
   formulario: { backgroundColor: 'white', padding: 20, borderRadius: 15, elevation: 3 },
   label: { fontSize: 16, marginBottom: 8, color: '#4B5563', fontWeight: '500' },
   input: { borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 8, padding: 15, marginBottom: 20, fontSize: 16, backgroundColor: '#F9FAFB' },
-  botonPrincipal: { backgroundColor: '#10B981', padding: 15, borderRadius: 10, alignItems: 'center' },
-  botonPrincipalSecundario: { backgroundColor: '#F59E0B', padding: 15, borderRadius: 10, alignItems: 'center' },
-  botonCancelar: { position: 'absolute', bottom: 50, alignSelf: 'center', backgroundColor: '#EF4444', padding: 15, borderRadius: 10 },
-  textoBoton: { color: 'white', fontSize: 18, fontWeight: 'bold' },
-  qrContainer: { marginTop: 30, alignItems: 'center' },
-  textoInstruccion: { fontSize: 16, color: '#059669', fontWeight: 'bold', marginBottom: 15 },
-  qrMarco: { padding: 15, backgroundColor: 'white', borderWidth: 2, borderColor: '#E5E7EB', borderRadius: 10, elevation: 2 }
+  
+  botonMenu: { backgroundColor: '#10B981', padding: 18, borderRadius: 10, alignItems: 'center', marginBottom: 15, elevation: 2 },
+  botonMenuAzul: { backgroundColor: '#3B82F6', padding: 18, borderRadius: 10, alignItems: 'center', marginBottom: 15, elevation: 2 },
+  botonMenuNaranja: { backgroundColor: '#F59E0B', padding: 18, borderRadius: 10, alignItems: 'center', marginBottom: 15, elevation: 2 },
+  botonMenuSecundario: { backgroundColor: '#E5E7EB', padding: 18, borderRadius: 10, alignItems: 'center', marginBottom: 15 },
+  botonAccion: { backgroundColor: '#10B981', padding: 15, borderRadius: 10, alignItems: 'center', marginTop: 10 },
+  textoBoton: { color: 'white', fontSize: 16, fontWeight: 'bold' },
+  textoBotonNegro: { color: '#374151', fontSize: 16, fontWeight: 'bold' },
+  separador: { height: 1, backgroundColor: '#D1D5DB', marginVertical: 15 },
+
+  // ARREGLOS DE LA LISTA: Se agregó flex: 1 al contenedor del texto para que no empuje al botón
+  filaAlumno: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: 'white', padding: 15, marginBottom: 10, borderRadius: 10, elevation: 1 },
+  filaResaltada: { backgroundColor: '#DBEAFE', borderColor: '#3B82F6', borderWidth: 1 }, // Color azul clarito cuando está marcado
+  infoTextContainer: { flex: 1, paddingRight: 10 }, // ESTO EVITA QUE LOS NOMBRES LARGUEN EMPUJEN EL BOTÓN
+  nombre: { fontSize: 15, fontWeight: 'bold', color: '#1F2937', flexWrap: 'wrap' }, // flexWrap permite 2 renglones
+  matriculaTexto: { fontSize: 13, color: '#6B7280', marginTop: 3 },
+  
+  botonEstado: { paddingVertical: 10, paddingHorizontal: 10, borderRadius: 8, width: 110, alignItems: 'center', justifyContent: 'center' }, // Tamaño fijo
+  textoBotonEstado: { color: 'white', fontWeight: 'bold', fontSize: 14 },
+  
+  bgVerde: { backgroundColor: '#10B981' },
+  bgRojo: { backgroundColor: '#EF4444' },
+  bgAmarillo: { backgroundColor: '#F59E0B' },
 });
+
