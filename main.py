@@ -3,6 +3,7 @@ from pydantic import BaseModel
 import pyodbc
 import platform
 from typing import List
+from datetime import datetime  # <-- NUEVO: Importación para leer la hora del QR
 
 app = FastAPI()
 
@@ -26,7 +27,6 @@ def get_db_connection():
 # --- MODELOS DE DATOS ---
 class LoginMaestro(BaseModel):
     id_maestro: int
-    # Eliminamos el código de aquí
 
 class RegistroAsistencia(BaseModel):
     matricula_alumno: str
@@ -37,6 +37,11 @@ class RegistroSincronizacion(BaseModel):
     id_maestro: int
     estado: str
 
+# <-- NUEVO: Modelo para recibir el texto escaneado del QR
+class QRAsistencia(BaseModel):
+    id_maestro: int
+    qr_texto: str
+
 # --- RUTAS DE LA API ---
 
 @app.post("/maestro/login")
@@ -45,7 +50,6 @@ def login_maestro(datos: LoginMaestro):
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Ahora solo busca por ID, ignorando el código
         cursor.execute("SELECT nombre FROM SuperMaestros WHERE id_maestro = ?", (datos.id_maestro,))
         maestro = cursor.fetchone()
         conn.close()
@@ -120,3 +124,46 @@ def sincronizar_asistencias_offline(registros: List[RegistroSincronizacion]):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al sincronizar: {str(e)}")
+
+
+# <-- NUEVA: Ruta para validar y guardar la asistencia del maestro vía QR
+@app.post("/maestro/asistencia-qr")
+def registrar_asistencia_maestro(datos: QRAsistencia):
+    # El QR tendrá este formato exacto: "YAHUA|2026-10-24 14:30:00"
+    partes = datos.qr_texto.split("|")
+    
+    if len(partes) != 2 or partes[0] != "YAHUA":
+        raise HTTPException(status_code=400, detail="QR inválido o código de otra escuela.")
+    
+    try:
+        # Convertimos el texto del QR en formato de tiempo y sacamos la hora actual
+        hora_qr = datetime.strptime(partes[1], "%Y-%m-%d %H:%M:%S")
+        hora_actual = datetime.now()
+        
+        # Calculamos cuántos segundos pasaron desde que se generó el QR
+        diferencia_segundos = abs((hora_actual - hora_qr).total_seconds())
+        
+        # La regla de oro: Si pasaron más de 15 segundos, lo rechazamos
+        if diferencia_segundos > 15:
+            raise HTTPException(status_code=400, detail="QR expirado. Acércate a la pantalla y escanea el actual.")
+            
+    except ValueError:
+        raise HTTPException(status_code=400, detail="El QR está dañado o alterado.")
+
+    # Si pasó las pruebas de seguridad, guardamos la asistencia en SQL Server
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # GETDATE() tomará la hora exacta del servidor en ese momento
+        cursor.execute(
+            "INSERT INTO SuperAsistenciasMaestros (id_maestro, fecha_hora) VALUES (?, GETDATE())", 
+            (datos.id_maestro,)
+        )
+        conn.commit()
+        conn.close()
+        
+        return {"status": "Éxito", "mensaje": "¡Asistencia registrada correctamente!"}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al guardar: {str(e)}")
